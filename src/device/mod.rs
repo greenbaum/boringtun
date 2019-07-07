@@ -16,12 +16,28 @@ pub mod poll;
 #[path = "epoll.rs"]
 pub mod poll;
 
+#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+mod illumos_ffi;
+
+#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+#[path = "epoll.rs"]
+pub mod poll;
+
+// XXX convert this to event port after we get the tun working
+//#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+//#[path = "eventport.rs"]
+//pub mod poll;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[path = "tun_darwin.rs"]
 pub mod tun;
 
 #[cfg(target_os = "linux")]
 #[path = "tun_linux.rs"]
+pub mod tun;
+
+#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+#[path = "tun_illumos.rs"]
 pub mod tun;
 
 #[cfg(unix)]
@@ -65,11 +81,13 @@ pub enum Error {
     GetSockOpt(String),
     GetSockName(String),
     UDPRead(i32),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "solaris", target_os = "illumos"))]
     Timer(String),
     IfaceRead(i32),
     DropPrivileges(String),
     ApiSocket(std::io::Error),
+    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    IpNode(String),
 }
 
 // What the event loop should do after a handler returns
