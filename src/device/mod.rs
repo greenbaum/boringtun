@@ -16,12 +16,28 @@ pub mod poll;
 #[path = "epoll.rs"]
 pub mod poll;
 
+#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+mod illumos_ffi;
+
+#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+#[path = "epoll.rs"]
+pub mod poll;
+
+// XXX convert this to event port after we get the tun working
+//#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+//#[path = "eventport.rs"]
+//pub mod poll;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[path = "tun_darwin.rs"]
 pub mod tun;
 
 #[cfg(target_os = "linux")]
 #[path = "tun_linux.rs"]
+pub mod tun;
+
+#[cfg(any(target_os = "illumos", target_os = "solaris"))]
+#[path = "tun_illumos.rs"]
 pub mod tun;
 
 #[cfg(unix)]
@@ -71,17 +87,20 @@ pub enum Error {
     GetSockOpt(String),
     GetSockName(String),
     UDPRead(i32),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "solaris", target_os = "illumos"))]
     Timer(String),
     IfaceRead(i32),
     DropPrivileges(String),
     ApiSocket(std::io::Error),
+    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    IpNode(String),
 }
 
 // What the event loop should do after a handler returns
 enum Action {
     Continue, // Continue the loop
-    Yield,    // Yield the read lock and acquire it again
+    Cancel,   // Cancel the EventGuard and continue the loop
+    Yield,    // Yield the read lock and aquire it again
     Exit,     // Stop the loop
 }
 
@@ -262,6 +281,7 @@ impl<T: Tun, S: Sock> DeviceHandle<T, S> {
                         let action = (*handler)(&mut device_lock, &mut thread_local);
                         match action {
                             Action::Continue => {}
+                            Action::Cancel => handler.cancel(),
                             Action::Yield => break,
                             Action::Exit => {
                                 device_lock.trigger_exit();
@@ -707,6 +727,14 @@ impl<T: Tun, S: Sock> Device<T, S> {
                 let mut iter = MAX_ITR;
 
                 while let Ok(src) = udp.read(&mut t.src_buf[..]) {
+                    if src.is_empty() {
+                        // Since we set nonblocking on the underlying UDPSocket and we didn't
+                        // receive an error back, we know that a length of 0 indicates that the
+                        // peer has gracefully closed it's connection, so we should remove the
+                        // conn handler from the event loop. This happens even on EPOLLIN because
+                        // the tun device is streams based.
+                        return Action::Cancel;
+                    };
                     let mut flush = false;
                     match peer
                         .tunnel
