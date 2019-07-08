@@ -59,6 +59,7 @@ extern "C" {
     pub fn signalfd(fd: c_int, mask: *const sigset_t, flags: c_int) -> c_int;
 
     // STREAMS
-    pub fn getmsg(fd: c_int, ctlptr: *mut strbuf, dataptr: *mut strbuf, flags: c_int) -> c_int;
+    pub fn getmsg(fd: c_int, ctlptr: *mut strbuf, dataptr: *mut strbuf, flags: *mut c_int)
+        -> c_int;
     pub fn putmsg(fd: c_int, ctlptr: *const strbuf, dataptr: *const strbuf, flags: c_int) -> c_int;
 }

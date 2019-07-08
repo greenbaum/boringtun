@@ -234,7 +234,8 @@ impl TunSocket {
 
     /// Get the current MTU value
     pub fn mtu(&self) -> Result<usize, Error> {
-        Ok(1500)
+        // FIX ME!!
+        Ok(1300)
     }
 
     pub fn write4(&self, src: &[u8]) -> usize {
@@ -255,20 +256,30 @@ impl TunSocket {
         match unsafe { putmsg(self.fd, std::ptr::null(), &sbuf, 0) } {
             // Well ignoring this error is kind of lame
             -1 => 0,
-            n => n as usize,
+            _ => buf.len(),
         }
     }
 
     pub fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error> {
+        let mut flags: i32 = 0;
+
         let mut sbuf = strbuf {
-            maxlen: 0,
+            maxlen: dst.len() as i32,
             len: 0,
-            buf: std::ptr::null(),
+            buf: dst.as_mut_ptr() as *const c_void,
         };
 
-        match unsafe { getmsg(self.fd, std::ptr::null_mut(), &mut sbuf, 0) } {
+        match unsafe { getmsg(self.fd, std::ptr::null_mut(), &mut sbuf, &mut flags) } {
             -1 => Err(Error::IfaceRead(errno())),
-            n @ _ => Ok(&mut dst[..n as usize]),
+            _ => {
+                // The man page says that -1 is a possible return value for strbuf.len and that it
+                // indicates no data is present in the message. So just return a slice of 0 bytes?
+                let mut bytes_read = 0;
+                if sbuf.len >= 0 {
+                    bytes_read = sbuf.len
+                };
+                Ok(&mut dst[..bytes_read as usize])
+            }
         }
     }
 }
