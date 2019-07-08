@@ -19,6 +19,7 @@ const I_PUNLINK: c_int = 0x5317;
 
 const IF_UNITSEL: c_uint = 0x80047336;
 const SIOCSLIFMUXID: c_uint = 0x80786984;
+const SIOCGIFMTU: c_uint = 0xc0206916;
 
 const TUNNEWPPA: c_int = 0x540001;
 
@@ -35,13 +36,15 @@ pub fn errno_str() -> String {
 #[derive(Default, Debug)]
 pub struct TunSocket {
     fd: RawFd,
-    name: String,
+    ip_fd: RawFd,
     muxid: i32,
+    name: String,
 }
 
 impl Drop for TunSocket {
     fn drop(&mut self) {
-        let _ = punlink(self.fd, self.muxid);
+        let _ = punlink(self.ip_fd, self.muxid);
+        unsafe { close(self.ip_fd) };
         unsafe { close(self.fd) };
     }
 }
@@ -115,22 +118,11 @@ fn punlink(fd: RawFd, muxid: i32) -> Result<(), Error> {
 }
 
 fn set_ip_muxid(fd: RawFd, name: &str, muxid: i32) -> Result<(), Error> {
-    let mut name_bytes = [0; 32];
-    for (i, b) in name.as_bytes().iter().take(32).enumerate() {
-        name_bytes[i] = *b;
-    }
+    let ifname: &[u8] = name.as_ref();
 
-    let mut lifru = [0; 336];
-    for (i, b) in muxid.to_le_bytes().iter().enumerate() {
-        lifru[i] = *b;
-    }
-
-    let ifr = lifreq {
-        lifr_name: name_bytes,
-        lifr_lifru1: lifru1 { ppa: 0 },
-        lifr_type: 0,
-        lifr_lifru: lifru,
-    };
+    let mut ifr: lifreq = unsafe { std::mem::zeroed() };
+    ifr.lifr_name[..ifname.len()].copy_from_slice(ifname);
+    ifr.lifr_lifru[..4].copy_from_slice(&muxid.to_le_bytes());
 
     match unsafe { ioctl(fd, SIOCSLIFMUXID as c_int, &ifr) } {
         -1 => Err(Error::IOCtl(errno_str())),
@@ -212,7 +204,8 @@ impl TunSocket {
         }
 
         Ok(TunSocket {
-            fd: ip_fd,
+            fd: tun_fd,
+            ip_fd: ip_fd,
             name,
             muxid: ip_muxid,
         })
@@ -234,8 +227,23 @@ impl TunSocket {
 
     /// Get the current MTU value
     pub fn mtu(&self) -> Result<usize, Error> {
-        // FIX ME!!
-        Ok(1300)
+        let ifname: &[u8] = self.name.as_ref();
+
+        // illumos struct ifreq
+        let mut ifr = [0; 32];
+        // ifreq.ifr_name[0; 16]
+        ifr[..ifname.len()].copy_from_slice(ifname);
+
+        match unsafe { ioctl(self.ip_fd, SIOCGIFMTU as c_int, &mut ifr) } {
+            -1 => Err(Error::IOCtl(errno_str())),
+            _ => {
+                let mut bytes = [0; 4];
+                // ifreq.ifr_ifru.ifru_mtu is the first 4 bytes of ifr_ifru.
+                bytes.copy_from_slice(&ifr[16..16 + 4]);
+                let mtu = u32::from_le_bytes(bytes);
+                Ok(mtu as usize)
+            }
+        }
     }
 
     pub fn write4(&self, src: &[u8]) -> usize {
