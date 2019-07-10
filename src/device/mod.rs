@@ -93,6 +93,7 @@ pub enum Error {
 // What the event loop should do after a handler returns
 enum Action {
     Continue, // Continue the loop
+    Cancel,   // Cancel the EventGuard and continue the loop
     Yield,    // Yield the read lock and aquire it again
     Exit,     // Stop the loop
 }
@@ -237,6 +238,7 @@ impl DeviceHandle {
                         let action = (*handler)(&mut device_lock, &mut thread_local);
                         match action {
                             Action::Continue => {}
+                            Action::Cancel => handler.cancel(),
                             Action::Yield => break,
                             Action::Exit => {
                                 device_lock.trigger_exit();
@@ -689,6 +691,14 @@ impl Device {
                 let mut iter = MAX_ITR;
 
                 while let Ok(src) = udp.read(&mut t.src_buf[..]) {
+                    if src.is_empty() {
+                        // Since we set nonblocking on the underlying UDPSocket and we didn't
+                        // receive an error back, we know that a length of 0 indicates that the
+                        // peer has gracefully closed it's connection, so we should remove the
+                        // conn handler from the event loop. This happens even on EPOLLIN because
+                        // the tun device is streams based.
+                        return Action::Cancel;
+                    };
                     let mut flush = false;
                     match peer.decapsulate(src, &mut t.dst_buf[..]) {
                         TunnResult::Done => {}
