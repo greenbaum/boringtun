@@ -290,6 +290,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "653d3bde60e96063ce6965340946086cdd3a8e0ebda9b7e2f2cf794f1766370d"
 
 [[package]]
+name = "illumos-priv"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "jni"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

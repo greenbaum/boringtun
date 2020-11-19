@@ -31,6 +31,9 @@ jni = "0.10"
 [target.'cfg(any(target_os="illumos", target_os="solaris"))'.dependencies]
 illumos-priv = "0.1.0"
 
+[target.'cfg(any(target_os="illumos", target_os="solaris"))'.dependencies]
+illumos-priv = "0.1.0"
+
 [lib]
 crate-type = ["lib", "staticlib", "dylib"]
 
