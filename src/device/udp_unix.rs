@@ -16,103 +16,6 @@ pub struct UDPSocket {
 }
 
 impl UDPSocket {
-    /// Create a new IPv4 UDP socket
-    pub fn new() -> Result<UDPSocket, Error> {
-        match unsafe { socket(AF_INET, SOCK_DGRAM, 0) } {
-            -1 => Err(Error::Socket(errno_str())),
-            fd => Ok(UDPSocket { fd, version: 4 }),
-        }
-    }
-
-    /// Create a new IPv6 UDP socket
-    pub fn new6() -> Result<UDPSocket, Error> {
-        match unsafe { socket(AF_INET6, SOCK_DGRAM, 0) } {
-            -1 => Err(Error::Socket(errno_str())),
-            fd => Ok(UDPSocket { fd, version: 6 }),
-        }
-    }
-
-    /// Set socket mode to non blocking
-    pub fn set_non_blocking(self) -> Result<UDPSocket, Error> {
-        match unsafe { fcntl(self.fd, F_GETFL) } {
-            -1 => Err(Error::FCntl(errno_str())),
-            flags => match unsafe { fcntl(self.fd, F_SETFL, flags | O_NONBLOCK) } {
-                -1 => Err(Error::FCntl(errno_str())),
-                _ => Ok(self),
-            },
-        }
-    }
-
-    /// Set the SO_REUSEPORT/SO_REUSEADDR option, so multiple sockets can bind on the same port
-    pub fn set_reuse(self) -> Result<UDPSocket, Error> {
-        match unsafe {
-            setsockopt(
-                self.fd,
-                SOL_SOCKET,
-                #[cfg(any(target_os = "linux", target_os = "solaris", target_os = "illumos"))]
-                SO_REUSEADDR, // On Linux SO_REUSEPORT won't prefer a connected IPv6 socket
-                #[cfg(not(any(
-                    target_os = "linux",
-                    target_os = "solaris",
-                    target_os = "illumos"
-                )))]
-                SO_REUSEPORT,
-                &1u32 as *const u32 as *const c_void,
-                std::mem::size_of::<u32>() as u32,
-            )
-        } {
-            -1 => Err(Error::SetSockOpt(errno_str())),
-            _ => Ok(self),
-        }
-    }
-
-    /// Query the local port the socket is bound to
-    /// # Panics
-    /// If socket is IPv6
-    pub fn port(&self) -> Result<u16, Error> {
-        if self.version != 4 {
-            panic!("Can only query ports of IPv4 sockets");
-        }
-        let mut addr: sockaddr_in = unsafe { std::mem::zeroed() };
-        let mut addr_len = std::mem::size_of_val(&addr) as _;
-        match unsafe { getsockname(self.fd, &mut addr as *mut sockaddr_in as _, &mut addr_len) } {
-            -1 => Err(Error::GetSockName(errno_str())),
-            _ => Ok(u16::from_be(addr.sin_port)),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    /// Set the mark on all packets sent by this socket using SO_MARK
-    /// Only available on Linux
-    pub fn set_fwmark(&self, mark: u32) -> Result<(), Error> {
-        match unsafe {
-            setsockopt(
-                self.fd,
-                SOL_SOCKET,
-                SO_MARK,
-                &mark as *const u32 as *const c_void,
-                std::mem::size_of_val(&mark) as _,
-            )
-        } {
-            -1 => Err(Error::SetSockOpt(errno_str())),
-            _ => Ok(()),
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn set_fwmark(&self, _: u32) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Bind the socket to a local port
-    pub fn bind(self, port: u16) -> Result<UDPSocket, Error> {
-        if self.version == 6 {
-            return self.bind6(port);
-        }
-
-        self.bind4(port)
-    }
-
     fn bind4(self, port: u16) -> Result<UDPSocket, Error> {
         let addr = sockaddr_in {
             #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -385,9 +288,13 @@ impl Sock for UDPSocket {
             setsockopt(
                 self.fd,
                 SOL_SOCKET,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "solaris", target_os = "illumos"))]
                 SO_REUSEADDR, // On Linux SO_REUSEPORT won't prefer a connected IPv6 socket
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "solaris",
+                    target_os = "illumos"
+                )))]
                 SO_REUSEPORT,
                 &1u32 as *const u32 as *const c_void,
                 std::mem::size_of::<u32>() as u32,
@@ -417,6 +324,11 @@ impl Sock for UDPSocket {
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
+    fn set_fwmark(&self, _: u32) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
     fn set_fwmark(&self, _: u32) -> Result<(), Error> {
         Ok(())
     }
