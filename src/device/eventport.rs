@@ -4,7 +4,7 @@
 use super::illumos_ffi::*;
 use super::{errno_str, Error};
 use libc::*;
-use spin::Mutex;
+use parking_lot::Mutex;
 use std::ops::Deref;
 use std::os::unix::io::RawFd;
 use std::ptr::null_mut;
@@ -140,7 +140,7 @@ impl<H: Sync + Send> EventPoll<H> {
         // the EPOLLIN event. Since we don't enable ONESHOT it will keep triggering until
         // canceled.
         // When we want to stop the event, we read something once from the file descriptor.
-        let efd = match unsafe { eventfd(0, EFD_NONBLOCK) } {
+        let efd = match unsafe { super::illumos_ffi::eventfd(0, super::illumos_ffi::EFD_NONBLOCK) } {
             -1 => return Err(Error::EventQueue(errno_str())),
             efd => efd,
         };

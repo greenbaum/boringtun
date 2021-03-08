@@ -3,6 +3,8 @@ use super::Error;
 use libc::*;
 use std::os::unix::io::{AsRawFd, RawFd};
 
+use crate::device::Tun;
+
 /*
  * WARNING this was largely a translation from jclulow's work to get the wireguard-go project
  * working on illumos. This file currently lacks comments until proper cleanup happens.
@@ -131,7 +133,24 @@ fn set_ip_muxid(fd: RawFd, name: &str, muxid: i32) -> Result<(), Error> {
 }
 
 impl TunSocket {
-    pub fn new(name: &str) -> Result<TunSocket, Error> {
+    fn write(&self, buf: &[u8]) -> usize {
+        let sbuf = strbuf {
+            maxlen: 0,
+            len: buf.len() as i32,
+            buf: buf.as_ptr() as *const c_void,
+        };
+
+        match unsafe { putmsg(self.fd, std::ptr::null(), &sbuf, 0) } {
+            // Well ignoring this error is kind of lame
+            -1 => 0,
+            _ => buf.len(),
+        }
+    }
+}
+
+
+impl Tun for TunSocket {
+    fn new(name: &str) -> Result<TunSocket, Error> {
         verify_tun_name(name)?;
 
         let ip_fd = match unsafe { open(b"/dev/udp\0".as_ptr() as _, O_RDWR) } {
@@ -211,11 +230,11 @@ impl TunSocket {
         })
     }
 
-    pub fn name(&self) -> Result<String, Error> {
+    fn name(&self) -> Result<String, Error> {
         Ok(self.name.clone())
     }
 
-    pub fn set_non_blocking(self) -> Result<TunSocket, Error> {
+    fn set_non_blocking(self) -> Result<TunSocket, Error> {
         match unsafe { fcntl(self.fd, F_GETFL) } {
             -1 => Err(Error::FCntl(errno_str())),
             flags @ _ => match unsafe { fcntl(self.fd, F_SETFL, flags | O_NONBLOCK) } {
@@ -226,7 +245,7 @@ impl TunSocket {
     }
 
     /// Get the current MTU value
-    pub fn mtu(&self) -> Result<usize, Error> {
+    fn mtu(&self) -> Result<usize, Error> {
         let ifname: &[u8] = self.name.as_ref();
 
         // illumos struct ifreq
@@ -246,29 +265,15 @@ impl TunSocket {
         }
     }
 
-    pub fn write4(&self, src: &[u8]) -> usize {
+    fn write4(&self, src: &[u8]) -> usize {
         self.write(src)
     }
 
-    pub fn write6(&self, src: &[u8]) -> usize {
+    fn write6(&self, src: &[u8]) -> usize {
         self.write(src)
     }
 
-    fn write(&self, buf: &[u8]) -> usize {
-        let sbuf = strbuf {
-            maxlen: 0,
-            len: buf.len() as i32,
-            buf: buf.as_ptr() as *const c_void,
-        };
-
-        match unsafe { putmsg(self.fd, std::ptr::null(), &sbuf, 0) } {
-            // Well ignoring this error is kind of lame
-            -1 => 0,
-            _ => buf.len(),
-        }
-    }
-
-    pub fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error> {
+    fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error> {
         let mut flags: i32 = 0;
 
         let mut sbuf = strbuf {

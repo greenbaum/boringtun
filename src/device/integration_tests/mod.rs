@@ -11,6 +11,7 @@ mod tests {
     use hex::encode;
     #[cfg(not(target_arch = "arm"))]
     use ring::rand::*;
+    use slog::*;
     use std::io::prelude::*;
     use std::io::{BufReader, Read, Write};
     use std::net::*;
@@ -21,7 +22,7 @@ mod tests {
     static NEXT_IFACE_IDX: AtomicUsize = AtomicUsize::new(100); // utun 100+ should be vacant during testing on CI
     static NEXT_PORT: AtomicUsize = AtomicUsize::new(61111); // Use ports starting with 61111, hoping we don't run into a taken port 🤷
     static NEXT_IP: AtomicUsize = AtomicUsize::new(0xc0000200); // Use 192.0.2.0/24 for those tests, we might use more than 256 addresses though, usize must be >=32 bits on all supported platforms
-    static NEXT_IP_V6: AtomicUsize = AtomicUsize::new(0); // Use the 2001:db8:: address space, append this atomic counter for buttom 32 bits
+    static NEXT_IP_V6: AtomicUsize = AtomicUsize::new(0); // Use the 2001:db8:: address space, append this atomic counter for bottom 32 bits
 
     fn next_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::from(
@@ -54,7 +55,7 @@ mod tests {
         container_name: Option<String>,
     }
 
-    /// Represents a single wireguard interface on local machine
+    /// Represents a single WireGuard interface on local machine
     struct WGHandle {
         _device: DeviceHandle,
         name: String,
@@ -163,7 +164,7 @@ mod tests {
                     "net.ipv6.conf.default.disable_ipv6=0",
                     "-p", // Open port for the endpoint
                     &format!("{0}:{0}/udp", self.endpoint.port()),
-                    "-v", // Map the generated wireguard config file
+                    "-v", // Map the generated WireGuard config file
                     &format!("{}:/wireguard/wg.conf", peer_config_file),
                     "-v", // Map the nginx config file
                     &format!("{}:/etc/nginx/conf.d/default.conf", nginx_config_file),
@@ -178,9 +179,24 @@ mod tests {
             self.container_name = Some(peer_config_file);
         }
 
-        fn get_request(&self) -> String {
+        fn connect(&self) -> std::net::TcpStream {
             let http_addr = SocketAddr::new(self.allowed_ips[0].ip, 80);
-            let mut tcp_conn = std::net::TcpStream::connect(http_addr).unwrap();
+            for _i in 0..5 {
+                let res = std::net::TcpStream::connect(http_addr);
+                if let Err(err) = res {
+                    println!("failed to connect: {:?}", err);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+
+                return res.unwrap();
+            }
+
+            panic!("failed to connect");
+        }
+
+        fn get_request(&self) -> String {
+            let mut tcp_conn = self.connect();
 
             write!(
                 tcp_conn,
@@ -246,12 +262,19 @@ mod tests {
     impl WGHandle {
         /// Create a new interface for the tunnel with the given address
         fn init(addr_v4: IpAddr, addr_v6: IpAddr) -> WGHandle {
+            let logger = Logger::root(
+                slog_term::FullFormat::new(slog_term::PlainSyncDecorator::new(std::io::stdout()))
+                    .build()
+                    .fuse(),
+                slog::o!(),
+            );
+
             WGHandle::init_with_config(
                 addr_v4,
                 addr_v6,
                 DeviceConfig {
                     n_threads: 2,
-                    log_level: Verbosity::None,
+                    logger,
                     use_connected_socket: true,
                     #[cfg(target_os = "linux")]
                     use_multi_queue: true,
@@ -529,12 +552,19 @@ mod tests {
         let addr_v4 = next_ip();
         let addr_v6 = next_ip_v6();
 
+        let logger = Logger::root(
+            slog_term::FullFormat::new(slog_term::PlainSyncDecorator::new(std::io::stdout()))
+                .build()
+                .fuse(),
+            slog::o!(),
+        );
+
         let mut wg = WGHandle::init_with_config(
             addr_v4,
             addr_v6,
             DeviceConfig {
                 n_threads: 2,
-                log_level: Verbosity::None,
+                logger,
                 use_connected_socket: false,
                 #[cfg(target_os = "linux")]
                 use_multi_queue: true,
@@ -672,6 +702,61 @@ mod tests {
         assert_eq!(response, encode(peer.key.public_key().as_bytes()));
     }
 
+    /// Test if wireguard can handle connection with an ipv6 endpoint
+    #[test]
+    #[cfg(target_os = "linux")] // Can't make docker work with ipv6 on macOS ATM
+    fn test_wg_start_ipv6_endpoint_not_connected() {
+        let port = next_port();
+        let private_key = X25519SecretKey::new();
+        let public_key = private_key.public_key();
+        let addr_v4 = next_ip();
+        let addr_v6 = next_ip_v6();
+
+        let logger = Logger::root(
+            slog_term::FullFormat::new(slog_term::PlainSyncDecorator::new(std::io::stdout()))
+                .build()
+                .fuse(),
+            slog::o!(),
+        );
+
+        let mut wg = WGHandle::init_with_config(
+            addr_v4,
+            addr_v6,
+            DeviceConfig {
+                n_threads: 2,
+                logger,
+                use_connected_socket: false,
+                #[cfg(target_os = "linux")]
+                use_multi_queue: true,
+            },
+        );
+
+        assert_eq!(wg.wg_set_port(port), "errno=0\n\n");
+        assert_eq!(wg.wg_set_key(&private_key), "errno=0\n\n");
+
+        let mut peer = Peer::new(
+            SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+                next_port(),
+            ),
+            vec![AllowedIp {
+                ip: next_ip_v6(),
+                cidr: 128,
+            }],
+        );
+
+        peer.start_in_container(&public_key, &addr_v6, port);
+
+        let peer = Arc::new(peer);
+
+        wg.add_peer(Arc::clone(&peer));
+        wg.start();
+
+        let response = peer.get_request();
+
+        assert_eq!(response, encode(peer.key.public_key().as_bytes()));
+    }
+
     /// Test many concurrent connections
     #[test]
     fn test_wg_concurrent() {
@@ -771,5 +856,4 @@ mod tests {
             t.join().unwrap();
         }
     }
-
 }

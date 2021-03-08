@@ -9,6 +9,8 @@ use super::noise::*;
 use base64::{decode, encode};
 use hex::encode as encode_hex;
 use libc::{raise, SIGSEGV};
+use slog::{o, Drain, Level, Logger};
+
 use std::ffi::{CStr, CString};
 use std::mem;
 use std::os::raw::c_char;
@@ -49,7 +51,9 @@ pub struct stats {
     pub time_since_last_handshake: i64,
     pub tx_bytes: usize,
     pub rx_bytes: usize,
-    reserved: [u8; 64], // Make sure to add new fields in this space, keeping total size constant
+    pub estimated_loss: f32,
+    pub estimated_rtt: i32,
+    reserved: [u8; 56], // Make sure to add new fields in this space, keeping total size constant
 }
 
 impl<'a> From<TunnResult<'a>> for wireguard_result {
@@ -79,14 +83,19 @@ impl<'a> From<TunnResult<'a>> for wireguard_result {
     }
 }
 
-impl From<u32> for Verbosity {
-    fn from(num: u32) -> Self {
-        match num {
-            0 => Verbosity::None,
-            1 => Verbosity::Info,
-            2 => Verbosity::Debug,
-            _ => Verbosity::All,
-        }
+/// Custom slog Drain logic
+struct FFIDrain {
+    logger: unsafe extern "C" fn(*const c_char),
+}
+
+impl Drain for FFIDrain {
+    type Ok = ();
+    type Err = ();
+
+    fn log(&self, record: &slog::Record, _: &slog::OwnedKVList) -> Result<Self::Ok, Self::Err> {
+        let cstr = CString::new(format!("{}", record.msg())).unwrap();
+        unsafe { (self.logger)(cstr.as_ptr()) };
+        Ok(())
     }
 }
 
@@ -163,6 +172,8 @@ pub unsafe extern "C" fn check_base64_encoded_x25519_key(key: *const c_char) -> 
 pub unsafe extern "C" fn new_tunnel(
     static_private: *const c_char,
     server_static_public: *const c_char,
+    keep_alive: u16,
+    index: u32,
     log_printer: Option<unsafe extern "C" fn(*const c_char)>,
     log_level: u32,
 ) -> *mut Tunn {
@@ -188,19 +199,36 @@ pub unsafe extern "C" fn new_tunnel(
         Ok(key) => key,
     };
 
-    let mut tunnel = match Tunn::new(Arc::new(private_key), Arc::new(public_key), None, None, 0) {
+    let keep_alive = if keep_alive == 0 {
+        None
+    } else {
+        Some(keep_alive)
+    };
+
+    let mut tunnel = match Tunn::new(
+        Arc::new(private_key),
+        Arc::new(public_key),
+        None,
+        keep_alive,
+        index,
+        None,
+    ) {
         Ok(t) => t,
         Err(_) => return ptr::null_mut(),
     };
 
     if let Some(logger) = log_printer {
-        tunnel.set_logger(
-            Box::new(move |e: &str| {
-                let cstr = CString::new(e).unwrap();
-                logger(cstr.as_ptr())
-            }),
-            Verbosity::from(log_level),
-        );
+        let level = match log_level {
+            0 => Level::Error,
+            1 => Level::Info,
+            2 => Level::Debug,
+            _ => Level::Trace,
+        };
+
+        let drain = FFIDrain { logger };
+        let logger = Logger::root(drain.filter_level(level).fuse(), o!());
+
+        tunnel.set_logger(logger);
     }
 
     PANIC_HOOK.call_once(|| {
@@ -233,7 +261,7 @@ pub unsafe extern "C" fn wireguard_write(
     // Slices are not owned, and therefore will not be freed by Rust
     let src = slice::from_raw_parts(src, src_size as usize);
     let dst = slice::from_raw_parts_mut(dst, dst_size as usize);
-    wireguard_result::from(tunnel.tunnel_to_network(src, dst))
+    wireguard_result::from(tunnel.encapsulate(src, dst))
 }
 
 /// Read a UDP packet from the server.
@@ -250,7 +278,7 @@ pub unsafe extern "C" fn wireguard_read(
     // Slices are not owned, and therefore will not be freed by Rust
     let src = slice::from_raw_parts(src, src_size as usize);
     let dst = slice::from_raw_parts_mut(dst, dst_size as usize);
-    wireguard_result::from(tunnel.network_to_tunnel(src, dst))
+    wireguard_result::from(tunnel.decapsulate(None, src, dst))
 }
 
 /// This is a state keeping function, that need to be called periodically.
@@ -287,12 +315,14 @@ pub unsafe extern "C" fn wireguard_force_handshake(
 #[no_mangle]
 pub unsafe extern "C" fn wireguard_stats(tunnel: *mut Tunn) -> stats {
     let tunnel = tunnel.as_ref().unwrap();
-    let (time, tx_bytes, rx_bytes) = tunnel.stats();
+    let (time, tx_bytes, rx_bytes, estimated_loss, estimated_rtt) = tunnel.stats();
     stats {
         time_since_last_handshake: time.map(|t| t as i64).unwrap_or(-1),
         tx_bytes,
         rx_bytes,
-        reserved: [0u8; 64],
+        estimated_loss,
+        estimated_rtt: estimated_rtt.map(|r| r as i32).unwrap_or(-1),
+        reserved: [0u8; 56],
     }
 }
 

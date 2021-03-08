@@ -1,7 +1,10 @@
 // Copyright (c) 2019 Cloudflare, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 
+use crate::device::peer::AllowedIP;
+
 use std::cmp::min;
+use std::iter::FromIterator;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// A trie of IP/cidr addresses
@@ -13,6 +16,18 @@ pub struct AllowedIps<D> {
 impl<D> Default for AllowedIps<D> {
     fn default() -> Self {
         Self { v4: None, v6: None }
+    }
+}
+
+impl<'a> FromIterator<&'a AllowedIP> for AllowedIps<()> {
+    fn from_iter<I: IntoIterator<Item = &'a AllowedIP>>(iter: I) -> Self {
+        let mut allowed_ips: AllowedIps<()> = Default::default();
+
+        for ip in iter {
+            allowed_ips.insert(ip.addr, ip.cidr as usize, ());
+        }
+
+        allowed_ips
     }
 }
 
@@ -42,7 +57,7 @@ impl<D> AllowedIps<D> {
         }
     }
 
-    pub fn remove(&mut self, predicate: &Fn(&D) -> bool) {
+    pub fn remove(&mut self, predicate: &dyn Fn(&D) -> bool) {
         remove32(&mut self.v4, predicate);
         remove128(&mut self.v6, predicate);
     }
@@ -151,7 +166,7 @@ macro_rules! build_node {
             }
         }
 
-        fn $remove<D>(node: &mut Option<$name<D>>, predicate: &Fn(&D) -> bool) {
+        fn $remove<D>(node: &mut Option<$name<D>>, predicate: &dyn Fn(&D) -> bool) {
             match node {
                 None => return,
                 Some($name::Node {
@@ -436,6 +451,9 @@ macro_rules! build_iter {
                         }
                         Some($node::Leaf(key, bits, data)) => {
                             let (cur_key, cur_bits) = self.key_hlp.pop().unwrap();
+                            if cur_bits == BITS && *bits == 0 {
+                                return Some((data, cur_key, cur_bits));
+                            }
                             return Some((data, cur_key ^ (key >> cur_bits), cur_bits + bits));
                         }
                         Some($node::Node {
@@ -760,5 +778,28 @@ mod tests {
                 0x2404, 0x6800, 0x4004, 0x0800, 0xdead, 0xbeef, 0xdead, 0xbeef
             ]))
         );
+    }
+
+    #[test]
+    fn test_allowed_ips_iter_zero_leaf_bits() {
+        let mut map: AllowedIps<char> = Default::default();
+        map.insert(IpAddr::from([10, 111, 0, 1]), 32, '1');
+        map.insert(IpAddr::from([10, 111, 0, 2]), 32, '2');
+        map.insert(IpAddr::from([10, 111, 0, 3]), 32, '3');
+
+        let mut map_iter = map.iter();
+        assert_eq!(
+            map_iter.next(),
+            Some((&'1', IpAddr::from([10, 111, 0, 1]), 32))
+        );
+        assert_eq!(
+            map_iter.next(),
+            Some((&'2', IpAddr::from([10, 111, 0, 2]), 32))
+        );
+        assert_eq!(
+            map_iter.next(),
+            Some((&'3', IpAddr::from([10, 111, 0, 3]), 32))
+        );
+        assert_eq!(map_iter.next(), None);
     }
 }
