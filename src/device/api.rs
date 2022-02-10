@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use super::dev_lock::LockReadGuard;
-use super::drop_privileges::*;
+use super::drop_privileges::get_saved_ids;
 use super::{make_array, AllowedIP, Device, Error, SocketAddr, X25519PublicKey, X25519SecretKey};
-use crate::device::{Action, Sock, Tun};
+use crate::device::Action;
 use hex::encode as encode_hex;
 use libc::*;
 use std::fs::{create_dir, remove_file};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::Ordering;
 
@@ -32,7 +32,7 @@ fn create_sock_dir() {
     }
 }
 
-impl<T: Tun, S: Sock> Device<T, S> {
+impl Device {
     /// Register the api handler for this Device. The api handler receives stream connections on a Unix socket
     /// with a known path: /var/run/wireguard/{tun_name}.sock.
     pub fn register_api_handler(&mut self) -> Result<(), Error> {
@@ -77,6 +77,40 @@ impl<T: Tun, S: Sock> Device<T, S> {
         self.register_api_signal_handlers()
     }
 
+    pub fn register_api_fd(&mut self, fd: i32) -> Result<(), Error> {
+        let io_file = unsafe { UnixStream::from_raw_fd(fd) };
+
+        self.queue.new_event(
+            io_file.as_raw_fd(),
+            Box::new(move |d, _| {
+                // This is the closure that listens on the api file descriptor
+
+                let mut reader = BufReader::new(&io_file);
+                let mut writer = BufWriter::new(&io_file);
+                let mut cmd = String::new();
+                if reader.read_line(&mut cmd).is_ok() {
+                    cmd.pop(); // pop the new line character
+                    let status = match cmd.as_ref() {
+                        // Only two commands are legal according to the protocol, get=1 and set=1.
+                        "get=1" => api_get(&mut writer, d),
+                        "set=1" => api_set(&mut reader, d),
+                        _ => EIO,
+                    };
+                    // The protocol requires to return an error code as the response, or zero on success
+                    writeln!(writer, "errno={}\n", status).ok();
+                } else {
+                    // The remote side is likely closed; we should trigger an exit.
+                    d.trigger_exit();
+                    return Action::Exit;
+                }
+
+                Action::Continue // Indicates the worker thread should continue as normal
+            }),
+        )?;
+
+        Ok(())
+    }
+
     fn register_monitor(&self, path: String) -> Result<(), Error> {
         self.queue.new_periodic_event(
             Box::new(move |d, _| {
@@ -118,7 +152,7 @@ impl<T: Tun, S: Sock> Device<T, S> {
 }
 
 #[allow(unused_must_use)]
-fn api_get<T: Tun, S: Sock>(writer: &mut BufWriter<&UnixStream>, d: &Device<T, S>) -> i32 {
+fn api_get(writer: &mut BufWriter<&UnixStream>, d: &Device) -> i32 {
     // get command requires an empty line, but there is no reason to be religious about it
     if let Some(ref k) = d.key_pair {
         writeln!(writer, "private_key={}", encode_hex(k.0.as_bytes()));
@@ -147,7 +181,7 @@ fn api_get<T: Tun, S: Sock>(writer: &mut BufWriter<&UnixStream>, d: &Device<T, S
             writeln!(writer, "endpoint={}", addr);
         }
 
-        for (_, ip, cidr) in p.allowed_ips() {
+        for (ip, cidr) in p.allowed_ips() {
             writeln!(writer, "allowed_ip={}/{}", ip, cidr);
         }
 
@@ -164,10 +198,7 @@ fn api_get<T: Tun, S: Sock>(writer: &mut BufWriter<&UnixStream>, d: &Device<T, S
     0
 }
 
-fn api_set<'a, T: Tun, S: Sock>(
-    reader: &mut BufReader<&UnixStream>,
-    d: &mut LockReadGuard<Device<T, S>>,
-) -> i32 {
+fn api_set(reader: &mut BufReader<&UnixStream>, d: &mut LockReadGuard<Device>) -> i32 {
     d.try_writeable(
         |device| device.trigger_yield(),
         |device| {
@@ -175,7 +206,7 @@ fn api_set<'a, T: Tun, S: Sock>(
 
             let mut cmd = String::new();
 
-            while let Ok(_) = reader.read_line(&mut cmd) {
+            while reader.read_line(&mut cmd).is_ok() {
                 cmd.pop(); // remove newline if any
                 if cmd.is_empty() {
                     return 0; // Done
@@ -229,9 +260,9 @@ fn api_set<'a, T: Tun, S: Sock>(
     .unwrap_or(EIO)
 }
 
-fn api_set_peer<T: Tun, S: Sock>(
+fn api_set_peer(
     reader: &mut BufReader<&UnixStream>,
-    d: &mut Device<T, S>,
+    d: &mut Device,
     pub_key: X25519PublicKey,
 ) -> i32 {
     let mut cmd = String::new();
@@ -243,7 +274,7 @@ fn api_set_peer<T: Tun, S: Sock>(
     let mut preshared_key = None;
     let mut allowed_ips: Vec<AllowedIP> = vec![];
 
-    while let Ok(_) = reader.read_line(&mut cmd) {
+    while reader.read_line(&mut cmd).is_ok() {
         cmd.pop(); // remove newline if any
         if cmd.is_empty() {
             d.update_peer(
@@ -304,7 +335,7 @@ fn api_set_peer<T: Tun, S: Sock>(
                         preshared_key,
                     );
                     match val.parse::<X25519PublicKey>() {
-                        Ok(key) => return api_set_peer::<T, S>(reader, d, key),
+                        Ok(key) => return api_set_peer(reader, d, key),
                         Err(_) => return EINVAL,
                     }
                 }

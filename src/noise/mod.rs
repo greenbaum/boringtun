@@ -9,7 +9,7 @@ mod session;
 mod tests;
 mod timers;
 
-use crate::crypto::x25519::*;
+use crate::crypto::{X25519PublicKey, X25519SecretKey};
 use crate::noise::errors::WireGuardError;
 use crate::noise::handshake::Handshake;
 use crate::noise::rate_limiter::RateLimiter;
@@ -21,7 +21,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
-use slog::{debug, trace, Logger};
 
 const PEER_HANDSHAKE_RATE_LIMIT: u64 = 10; // The default value to use for rate limiting, when no other rate limiter is defined
 
@@ -66,10 +65,7 @@ pub struct Tunn {
     timers: timers::Timers, // Keeps tabs on the expiring timers
     tx_bytes: AtomicUsize,
     rx_bytes: AtomicUsize,
-
     rate_limiter: Arc<RateLimiter>,
-
-    pub logger: Logger,
 }
 
 type MessageType = u32;
@@ -153,19 +149,12 @@ impl Tunn {
             packet_queue: Mutex::new(VecDeque::new()),
             timers: Timers::new(persistent_keepalive, rate_limiter.is_none()),
 
-            logger: slog::Logger::root(slog::Discard, slog::o!()),
-
             rate_limiter: rate_limiter.unwrap_or_else(|| {
                 Arc::new(RateLimiter::new(&static_public, PEER_HANDSHAKE_RATE_LIMIT))
             }),
         };
 
         Ok(Box::new(tunn))
-    }
-
-    /// Set the log function and logging level for the tunnel
-    pub fn set_logger(&mut self, logger: Logger) {
-        self.logger = logger
     }
 
     /// Update the private key and clear existing sessions
@@ -199,7 +188,10 @@ impl Tunn {
             // Send the packet using an established session
             let packet = session.format_packet_data(src, dst);
             self.timer_tick(TimerName::TimeLastPacketSent);
-            self.timer_tick(TimerName::TimeLastDataPacketSent);
+            // Exclude Keepalive packets from timer update.
+            if !src.is_empty() {
+                self.timer_tick(TimerName::TimeLastDataPacketSent);
+            }
             self.tx_bytes.fetch_add(src.len(), Ordering::Relaxed);
             return TunnResult::WriteToNetwork(packet);
         }
@@ -298,7 +290,10 @@ impl Tunn {
         p: HandshakeInit,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
-        debug!(self.logger, "Received handshake_initiation"; "remote_idx" => p.sender_idx);
+        tracing::debug!(
+            message = "Received handshake_initiation",
+            remote_idx = p.sender_idx
+        );
 
         let (packet, session) = {
             let mut handshake = self.handshake.lock();
@@ -313,7 +308,7 @@ impl Tunn {
         self.timer_tick(TimerName::TimeLastPacketSent);
         self.timer_tick_session_established(false, index); // New session established, we are not the initiator
 
-        debug!(self.logger, "Sending handshake_response"; "local_idx" => index);
+        tracing::debug!(message = "Sending handshake_response", local_idx = index);
 
         Ok(TunnResult::WriteToNetwork(packet))
     }
@@ -323,7 +318,11 @@ impl Tunn {
         p: HandshakeResponse,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
-        debug!(self.logger, "Received handshake_response"; "local_idx" => p.receiver_idx, "remote_idx" => p.sender_idx);
+        tracing::debug!(
+            message = "Received handshake_response",
+            local_idx = p.receiver_idx,
+            remote_idx = p.sender_idx
+        );
 
         let session = {
             let mut handshake = self.handshake.lock();
@@ -340,7 +339,7 @@ impl Tunn {
         self.timer_tick_session_established(true, index); // New session established, we are the initiator
         self.set_current_session(l_idx);
 
-        debug!(self.logger, "Sending keepalive");
+        tracing::debug!("Sending keepalive");
 
         Ok(TunnResult::WriteToNetwork(keepalive_packet)) // Send a keepalive as a response
     }
@@ -349,7 +348,10 @@ impl Tunn {
         &self,
         p: PacketCookieReply,
     ) -> Result<TunnResult<'a>, WireGuardError> {
-        debug!(self.logger, "Received cookie_reply"; "local_idx" => p.receiver_idx);
+        tracing::debug!(
+            message = "Received cookie_reply",
+            local_idx = p.receiver_idx
+        );
         {
             let mut handshake = self.handshake.lock();
             handshake.receive_cookie_reply(p)?;
@@ -357,7 +359,7 @@ impl Tunn {
         self.timer_tick(TimerName::TimeLastPacketReceived);
         self.timer_tick(TimerName::TimeCookieReceived);
 
-        debug!(self.logger, "Did set cookie");
+        tracing::debug!("Did set cookie");
 
         Ok(TunnResult::Done)
     }
@@ -374,7 +376,7 @@ impl Tunn {
                 >= self.timers.session_timers[cur_idx % N_SESSIONS].time()
         {
             self.current.store(new_idx, Ordering::SeqCst);
-            debug!(self.logger, "New session"; "session" => new_idx);
+            tracing::debug!(message = "New session", session = new_idx);
         }
     }
 
@@ -391,7 +393,7 @@ impl Tunn {
         let decapsulated_packet = {
             let lock = self.sessions[idx].read();
             let session = (*lock).as_ref().ok_or_else(|| {
-                trace!(self.logger, "No current session available"; "remote_idx" => r_idx);
+                tracing::trace!(message = "No current session available", remote_idx = r_idx);
                 WireGuardError::NoCurrentSession
             })?;
             session.receive_packet_data(packet, dst)?
@@ -399,7 +401,6 @@ impl Tunn {
 
         self.set_current_session(r_idx);
 
-        self.timer_tick(TimerName::TimeLastDataPacketReceived);
         self.timer_tick(TimerName::TimeLastPacketReceived);
 
         Ok(self.validate_decapsulated_packet(decapsulated_packet))
@@ -425,7 +426,7 @@ impl Tunn {
 
         match handshake.format_handshake_initiation(dst) {
             Ok(packet) => {
-                debug!(self.logger, "Sending handshake_initiation");
+                tracing::debug!("Sending handshake_initiation");
 
                 if starting_new_handshake {
                     self.timer_tick(TimerName::TimeLastHandshakeStarted);
@@ -483,6 +484,7 @@ impl Tunn {
             return TunnResult::Err(WireGuardError::InvalidPacket);
         }
 
+        self.timer_tick(TimerName::TimeLastDataPacketReceived);
         self.rx_bytes.fetch_add(computed_len, Ordering::Relaxed);
 
         match src_ip_address {
@@ -565,11 +567,7 @@ impl Tunn {
     /// * Data bytes sent
     /// * Data bytes received
     pub fn stats(&self) -> (Option<u64>, usize, usize, f32, Option<u32>) {
-        let time = if let Some(time) = self.time_since_last_handshake() {
-            Some(time.as_secs())
-        } else {
-            None
-        };
+        let time = self.time_since_last_handshake().map(|t| t.as_secs());
         let tx_bytes = self.tx_bytes.load(Ordering::Relaxed);
         let rx_bytes = self.rx_bytes.load(Ordering::Relaxed);
         let loss = self.estimate_loss();

@@ -9,11 +9,10 @@ pub mod device;
 pub mod ffi;
 pub mod noise;
 
-use crate::device::drop_privileges::*;
-use crate::device::*;
+use crate::device::drop_privileges::drop_privileges;
+use crate::device::{DeviceConfig, DeviceHandle};
 use clap::{value_t, App, Arg};
 use daemonize::Daemonize;
-use slog::{error, info, o, Drain, Logger};
 use std::fs::File;
 use std::os::unix::net::UnixDatagram;
 use std::process::exit;
@@ -62,6 +61,16 @@ fn main() {
                 .possible_values(&["error", "info", "debug", "trace"])
                 .help("Log verbosity")
                 .default_value("error"),
+            Arg::with_name("uapi-fd")
+                .long("uapi-fd")
+                .env("WG_UAPI_FD")
+                .help("File descriptor for the user API")
+                .default_value("-1"),
+            Arg::with_name("tun-fd")
+                .long("tun-fd")
+                .env("WG_TUN_FD")
+                .help("File descriptor for an already-existing TUN device")
+                .default_value("-1"),
             Arg::with_name("log")
                 .takes_value(true)
                 .long("log")
@@ -84,16 +93,22 @@ fn main() {
         .get_matches();
 
     let background = !matches.is_present("foreground");
-    let tun_name = matches.value_of("INTERFACE_NAME").unwrap();
+    #[cfg(target_os = "linux")]
+    let uapi_fd = value_t!(matches.value_of("uapi-fd"), i32).unwrap_or_else(|e| e.exit());
+    let tun_fd = value_t!(matches.value_of("tun-fd"), isize).unwrap_or_else(|e| e.exit());
+    let mut tun_name = matches.value_of("INTERFACE_NAME").unwrap();
+    if tun_fd >= 0 {
+        tun_name = matches.value_of("tun-fd").unwrap();
+    }
     let n_threads = value_t!(matches.value_of("threads"), usize).unwrap_or_else(|e| e.exit());
     let log_level =
-        value_t!(matches.value_of("verbosity"), slog::Level).unwrap_or_else(|e| e.exit());
+        value_t!(matches.value_of("verbosity"), tracing::Level).unwrap_or_else(|e| e.exit());
 
     // Create a socketpair to communicate between forked processes
     let (sock1, sock2) = UnixDatagram::pair().unwrap();
     let _ = sock1.set_nonblocking(true);
 
-    let logger;
+    let _guard;
 
     if background {
         let log = matches.value_of("log").unwrap();
@@ -101,12 +116,15 @@ fn main() {
         let log_file =
             File::create(&log).unwrap_or_else(|_| panic!("Could not create log file {}", log));
 
-        let plain = slog_term::PlainSyncDecorator::new(log_file);
-        let drain = slog_term::CompactFormat::new(plain)
-            .build()
-            .filter_level(log_level);
-        let drain = std::sync::Mutex::new(drain).fuse();
-        logger = Logger::root(drain, o!());
+        let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
+
+        _guard = guard;
+
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .init();
 
         let daemonize = Daemonize::new()
             .working_directory("/tmp")
@@ -121,24 +139,23 @@ fn main() {
             });
 
         match daemonize.start() {
-            Ok(_) => info!(logger, "BoringTun started successfully"),
+            Ok(_) => tracing::info!("BoringTun started successfully"),
             Err(e) => {
-                error!(logger, "Error, {}", e);
+                tracing::error!(error = ?e);
                 exit(1);
             }
         }
     } else {
-        let plain = slog_term::TermDecorator::new().stdout().build();
-        let drain = slog_term::FullFormat::new(plain)
-            .build()
-            .filter_level(log_level);
-        let drain = std::sync::Mutex::new(drain).fuse();
-        logger = Logger::root(drain, o!());
+        tracing_subscriber::fmt()
+            .pretty()
+            .with_max_level(log_level)
+            .init();
     }
 
     let config = DeviceConfig {
         n_threads,
-        logger: logger.clone(),
+        #[cfg(target_os = "linux")]
+        uapi_fd,
         use_connected_socket: !matches.is_present("disable-connected-udp"),
         #[cfg(target_os = "linux")]
         use_multi_queue: !matches.is_present("disable-multi-queue"),
@@ -148,7 +165,7 @@ fn main() {
         Ok(d) => d,
         Err(e) => {
             // Notify parent that tunnel initialization failed
-            error!(logger, "Failed to initialize tunnel: {:?}", e);
+            tracing::error!(message = "Failed to initialize tunnel", error=?e);
             sock1.send(&[0]).unwrap();
             exit(1);
         }
@@ -156,7 +173,7 @@ fn main() {
 
     if !matches.is_present("disable-drop-privileges") {
         //if let Err(e) = drop_privileges() {
-        //    error!(logger, "Failed to drop privileges: {:?}", e);
+        //    tracing::error!(message = "Failed to drop privileges", error = ?e);
         //    sock1.send(&[0]).unwrap();
         //    exit(1);
         //}
@@ -170,7 +187,7 @@ fn main() {
     sock1.send(&[1]).unwrap();
     drop(sock1);
 
-    info!(logger, "BoringTun started successfully");
+    tracing::info!("BoringTun started successfully");
 
     device_handle.wait();
 }

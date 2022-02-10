@@ -333,10 +333,13 @@ impl<H: Sync + Send> EventPoll<H> {
 }
 
 impl<H> EventPoll<H> {
-    /// Disable and remove the event and associated handler, using the fd that was used
-    /// to register it.
-    /// This function is only safe to call when the event loop is not running, otherwise the
-    /// memory of the handler may get freed while in use.
+    /// Disable and remove the event and associated handler, using the fd that
+    /// was used to register it.
+    ///
+    /// # Safety
+    ///
+    /// This function is only safe to call when the event loop is not running,
+    /// otherwise the memory of the handler may get freed while in use.
     pub unsafe fn clear_event_by_fd(&self, index: RawFd) {
         let mut events = self.events.lock();
         assert!(index >= 0);
@@ -384,6 +387,10 @@ impl<'a, H> EventGuard<'a, H> {
     pub fn cancel(self) {
         unsafe { self.poll.clear_event_by_fd(self.event.fd) };
         std::mem::forget(self); // Don't call the regular drop that would enable the event
+    }
+
+    pub fn fd(&self) -> i32 {
+        return self.event.fd;
     }
 
     /// Change the event flags to enable or disable notifying when the fd is writable

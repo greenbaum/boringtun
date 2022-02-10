@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use super::{HandshakeInit, HandshakeResponse, PacketCookieReply};
-use crate::crypto::blake2s::Blake2s;
-use crate::crypto::chacha20poly1305::ChaCha20Poly1305;
-use crate::crypto::x25519::{X25519PublicKey, X25519SecretKey};
+use crate::crypto::{Blake2s, ChaCha20Poly1305, X25519PublicKey, X25519SecretKey};
 use crate::noise::errors::WireGuardError;
 use crate::noise::make_array;
 use crate::noise::session::Session;
@@ -56,7 +54,7 @@ macro_rules! SEAL {
 
 macro_rules! OPEN {
     ($pt:expr, $key:expr, $counter:expr, $data:expr, $aad:expr) => {
-        ChaCha20Poly1305::new_aead(&$key).open_wg($counter, &$aad, &$data, &mut $pt);
+        ChaCha20Poly1305::new_aead(&$key).open_wg($counter, &$aad, &$data, &mut $pt)
     };
 }
 
@@ -292,10 +290,7 @@ impl Handshake {
     }
 
     pub(crate) fn is_in_progress(&self) -> bool {
-        match self.state {
-            HandshakeState::None | HandshakeState::Expired => false,
-            _ => true,
-        }
+        !matches!(self.state, HandshakeState::None | HandshakeState::Expired)
     }
 
     pub(crate) fn timer(&self) -> Option<Instant> {
@@ -311,10 +306,7 @@ impl Handshake {
     }
 
     pub(crate) fn is_expired(&self) -> bool {
-        match self.state {
-            HandshakeState::Expired => true,
-            _ => false,
-        }
+        matches!(self.state, HandshakeState::Expired)
     }
 
     pub(crate) fn has_cookie(&self) -> bool {

@@ -1,22 +1,28 @@
 // Copyright (c) 2019 Cloudflare, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 
-use crate::device::*;
 use parking_lot::RwLock;
+
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
+
+use crate::device::{AllowedIps, Error};
+use crate::noise::{Tunn, TunnResult};
+
+use crate::device::udp::UDPSocket;
 
 #[derive(Default, Debug)]
-pub struct Endpoint<S: Sock> {
+pub struct Endpoint {
     pub addr: Option<SocketAddr>,
-    pub conn: Option<Arc<S>>,
+    pub conn: Option<Arc<UDPSocket>>,
 }
 
-pub struct Peer<S: Sock> {
+pub struct Peer {
     pub(crate) tunnel: Box<Tunn>, // The associated tunnel struct
     index: u32,                   // The index the tunnel uses
-    endpoint: RwLock<Endpoint<S>>,
+    endpoint: RwLock<Endpoint>,
     allowed_ips: AllowedIps<()>,
     preshared_key: Option<[u8; 32]>,
 }
@@ -45,14 +51,14 @@ impl FromStr for AllowedIP {
     }
 }
 
-impl<S: Sock> Peer<S> {
+impl Peer {
     pub fn new(
         tunnel: Box<Tunn>,
         index: u32,
         endpoint: Option<SocketAddr>,
         allowed_ips: &[AllowedIP],
         preshared_key: Option<[u8; 32]>,
-    ) -> Peer<S> {
+    ) -> Peer {
         Peer {
             tunnel,
             index,
@@ -60,7 +66,7 @@ impl<S: Sock> Peer<S> {
                 addr: endpoint,
                 conn: None,
             }),
-            allowed_ips: allowed_ips.iter().collect(),
+            allowed_ips: allowed_ips.iter().map(|ip| (ip, ())).collect(),
             preshared_key,
         }
     }
@@ -69,13 +75,13 @@ impl<S: Sock> Peer<S> {
         self.tunnel.update_timers(dst)
     }
 
-    pub fn endpoint(&self) -> parking_lot::RwLockReadGuard<'_, Endpoint<S>> {
+    pub fn endpoint(&self) -> parking_lot::RwLockReadGuard<'_, Endpoint> {
         self.endpoint.read()
     }
 
     pub fn shutdown_endpoint(&self) {
         if let Some(conn) = self.endpoint.write().conn.take() {
-            info!(self.tunnel.logger, "Disconnecting from endpoint");
+            tracing::info!("Disconnecting from endpoint");
             conn.shutdown();
         }
     }
@@ -95,7 +101,11 @@ impl<S: Sock> Peer<S> {
         };
     }
 
-    pub fn connect_endpoint(&self, port: u16, fwmark: Option<u32>) -> Result<Arc<S>, Error> {
+    pub fn connect_endpoint(
+        &self,
+        port: u16,
+        fwmark: Option<u32>,
+    ) -> Result<Arc<UDPSocket>, Error> {
         let mut endpoint = self.endpoint.write();
 
         if endpoint.conn.is_some() {
@@ -103,12 +113,12 @@ impl<S: Sock> Peer<S> {
         }
 
         let udp_conn = Arc::new(match endpoint.addr {
-            Some(addr @ SocketAddr::V4(_)) => S::new()?
+            Some(addr @ SocketAddr::V4(_)) => UDPSocket::new()?
                 .set_non_blocking()?
                 .set_reuse()?
                 .bind(port)?
                 .connect(&addr)?,
-            Some(addr @ SocketAddr::V6(_)) => S::new6()?
+            Some(addr @ SocketAddr::V6(_)) => UDPSocket::new6()?
                 .set_non_blocking()?
                 .set_reuse()?
                 .bind(port)?
@@ -120,11 +130,10 @@ impl<S: Sock> Peer<S> {
             udp_conn.set_fwmark(fwmark)?;
         }
 
-        info!(
-            self.tunnel.logger,
-            "Connected endpoint :{}->{}",
-            port,
-            endpoint.addr.unwrap()
+        tracing::info!(
+            message="Connected endpoint",
+            port=port,
+            endpoint=?endpoint.addr.unwrap()
         );
 
         endpoint.conn = Some(Arc::clone(&udp_conn));
@@ -136,8 +145,8 @@ impl<S: Sock> Peer<S> {
         self.allowed_ips.find(addr.into()).is_some()
     }
 
-    pub fn allowed_ips(&self) -> Iter<()> {
-        self.allowed_ips.iter()
+    pub fn allowed_ips(&self) -> impl Iterator<Item = (IpAddr, u8)> + '_ {
+        self.allowed_ips.iter().map(|(_, ip, cidr)| (ip, cidr))
     }
 
     pub fn time_since_last_handshake(&self) -> Option<std::time::Duration> {

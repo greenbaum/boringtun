@@ -14,7 +14,7 @@ use std::ops::Sub;
 use std::str::FromStr;
 
 #[cfg(not(target_arch = "arm"))]
-use ring::rand::*;
+pub use ring::rand::{SecureRandom, SystemRandom};
 
 const MASK_63BITS: u128 = 0x7fff_ffff_ffff_ffff;
 const MASK_64BITS: u128 = 0xffff_ffff_ffff_ffff;
@@ -489,7 +489,7 @@ fn sqr_256(x: Felem) -> Felem2 {
 
 #[inline(always)]
 fn mod_25519(x: Felem2) -> Felem {
-    let c38 = 38 as u128;
+    let c38 = 38_u128;
 
     let mut acc0 = u128::from(x.0[0]);
     let mut acc1 = u128::from(x.0[1]);
@@ -638,7 +638,7 @@ fn x25519_shared_key(peer_key: &[u8], secret_key: &[u8]) -> [u8; 32] {
 
     let mut scalar = [0_u8; 32];
     let mut shared_key = [0_u8; 32];
-    scalar[..].copy_from_slice(&secret_key[..]);
+    scalar[..].copy_from_slice(secret_key);
 
     assert!(peer_key.len() == 32);
     let u = Felem([

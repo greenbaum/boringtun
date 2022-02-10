@@ -2,7 +2,7 @@
 
 # BoringTun
 
-[![crates.io](https://meritbadge.herokuapp.com/boringtun)](https://crates.io/crates/boringtun)
+[![crates.io](https://img.shields.io/crates/v/boringtun.svg)](https://crates.io/crates/boringtun)
 
 **BoringTun** is an implementation of the [WireGuard<sup>®</sup>](https://www.wireguard.com/) protocol designed for portability and speed.
 
@@ -23,7 +23,7 @@ cargo install boringtun
 
 ### Building
 
-- Library only: `cargo build --lib --release [--target $(TARGET_TRIPLE)]`
+- Library only: `cargo build --lib --no-default-features --release [--target $(TARGET_TRIPLE)]`
 - Executable: `cargo build --bin boringtun --release [--target $(TARGET_TRIPLE)]`
 
 By default the executable is placed in the `./target/release` folder. You can copy it to a desired location manually, or install it using `cargo install --bin boringtun --path .`.
@@ -100,7 +100,7 @@ The project is licensed under the [3-Clause BSD License](https://opensource.org/
 
 ### Contribution
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the 3-Clause BSD License, shall licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the 3-Clause BSD License, shall be licensed as above, without any additional terms or conditions.
 
 If you want to contribute to this project, please read our [`CONTRIBUTING.md`].
 
