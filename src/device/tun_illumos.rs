@@ -3,8 +3,6 @@ use super::Error;
 use libc::*;
 use std::os::unix::io::{AsRawFd, RawFd};
 
-use crate::device::Tun;
-
 /*
  * WARNING this was largely a translation from jclulow's work to get the wireguard-go project
  * working on illumos. This file currently lacks comments until proper cleanup happens.
@@ -146,11 +144,8 @@ impl TunSocket {
             _ => buf.len(),
         }
     }
-}
 
-
-impl Tun for TunSocket {
-    fn new(name: &str) -> Result<TunSocket, Error> {
+    pub fn new(name: &str) -> Result<TunSocket, Error> {
         verify_tun_name(name)?;
 
         let ip_fd = match unsafe { open(b"/dev/udp\0".as_ptr() as _, O_RDWR) } {
@@ -230,11 +225,11 @@ impl Tun for TunSocket {
         })
     }
 
-    fn name(&self) -> Result<String, Error> {
+    pub fn name(&self) -> Result<String, Error> {
         Ok(self.name.clone())
     }
 
-    fn set_non_blocking(self) -> Result<TunSocket, Error> {
+    pub fn set_non_blocking(self) -> Result<TunSocket, Error> {
         match unsafe { fcntl(self.fd, F_GETFL) } {
             -1 => Err(Error::FCntl(errno_str())),
             flags @ _ => match unsafe { fcntl(self.fd, F_SETFL, flags | O_NONBLOCK) } {
@@ -245,7 +240,7 @@ impl Tun for TunSocket {
     }
 
     /// Get the current MTU value
-    fn mtu(&self) -> Result<usize, Error> {
+    pub fn mtu(&self) -> Result<usize, Error> {
         let ifname: &[u8] = self.name.as_ref();
 
         // illumos struct ifreq
@@ -265,15 +260,15 @@ impl Tun for TunSocket {
         }
     }
 
-    fn write4(&self, src: &[u8]) -> usize {
+    pub fn write4(&self, src: &[u8]) -> usize {
         self.write(src)
     }
 
-    fn write6(&self, src: &[u8]) -> usize {
+    pub fn write6(&self, src: &[u8]) -> usize {
         self.write(src)
     }
 
-    fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error> {
+    pub fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error> {
         let mut flags: i32 = 0;
 
         let mut sbuf = strbuf {

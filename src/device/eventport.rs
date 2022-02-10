@@ -345,4 +345,8 @@ impl<'a, H> EventGuard<'a, H> {
         unsafe { self.poll.clear_event_by_fd(self.event.fd) };
         std::mem::forget(self); // Don't call the regular drop that would enable the event
     }
+
+    pub fn fd(&self) -> i32 {
+        return self.event.fd;
+    }
 }
