@@ -95,7 +95,7 @@ impl<H: Sync + Send> EventPoll<H> {
     }
 
     /// Add and enable a new timed event with the factory.
-    /// The even will be triggered for the first time after period time, and hencefore triggered
+    /// The event will be triggered for the first time after period time, and hencefore triggered
     /// every period time. Period is counted from the moment the appropriate EventGuard is released.
     pub fn new_periodic_event(&self, handler: H, period: Duration) -> Result<EventRef, Error> {
         // The periodic event on Linux uses the timerfd
@@ -109,7 +109,7 @@ impl<H: Sync + Send> EventPoll<H> {
             tv_nsec: period.subsec_nanos() as _,
         };
 
-        let spec = itimerspec {
+        let spec = super::illumos_ffi::itimerspec {
             it_value: ts,
             it_interval: ts,
         };
@@ -140,7 +140,8 @@ impl<H: Sync + Send> EventPoll<H> {
         // the EPOLLIN event. Since we don't enable ONESHOT it will keep triggering until
         // canceled.
         // When we want to stop the event, we read something once from the file descriptor.
-        let efd = match unsafe { super::illumos_ffi::eventfd(0, super::illumos_ffi::EFD_NONBLOCK) } {
+        let efd = match unsafe { super::illumos_ffi::eventfd(0, super::illumos_ffi::EFD_NONBLOCK) }
+        {
             -1 => return Err(Error::EventQueue(errno_str())),
             efd => efd,
         };
@@ -323,7 +324,7 @@ impl<'a, H> Drop for EventGuard<'a, H> {
     fn drop(&mut self) {
         if self.event.needs_read {
             // Must read from the event to reset it before we enable it
-                let mut buf: [std::mem::MaybeUninit<u8>; 256] =
+            let mut buf: [std::mem::MaybeUninit<u8>; 256] =
                 unsafe { std::mem::MaybeUninit::uninit().assume_init() };
             while unsafe { read(self.event.fd, buf.as_mut_ptr() as _, buf.len() as _) } != -1 {}
         }
