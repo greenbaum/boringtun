@@ -1,4 +1,3 @@
-
 parameters:
   runBinaryTests: 'true'
 
@@ -9,22 +8,22 @@ steps:
     displayName: 'Install cargo'
   - script: |
       export PATH=$PATH:$HOME/.cargo/bin
-      cargo build --lib
+      cargo build --lib --no-default-features
     displayName: 'Build library'
   - script: |
       export PATH=$PATH:$HOME/.cargo/bin
-      cargo test --lib -- --test-threads=1
+      cargo test --lib --no-default-features -- --test-threads=1
     displayName: 'Test library'
   - script: |
       export PATH=$PATH:$HOME/.cargo/bin
-      cargo test --lib -- --ignored --test-threads=1
+      cargo test --lib --no-default-features -- --ignored --test-threads=1
     displayName: 'Library integration tests'
   - script: |
       export PATH=$PATH:$HOME/.cargo/bin
-      cargo build --bin boringtun
+      cargo build --bin boringtun-cli
     displayName: 'Build executable'
   - ${{ if eq(parameters.runBinaryTests, 'true') }}:
     - script: |
         export PATH=$PATH:$HOME/.cargo/bin
-        cargo test --bin boringtun -- --test-threads=1
+        cargo test --bin boringtun-cli -- --test-threads=1
       displayName: 'Test executable'

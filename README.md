@@ -2,7 +2,11 @@
 
 # BoringTun
 
-[![crates.io](https://meritbadge.herokuapp.com/boringtun)](https://crates.io/crates/boringtun)
+## Warning
+Boringtun is currently undergoing a restructuring. You should probably not rely on or link to 
+the master branch right now. Instead you should use the crates.io page.
+
+[![crates.io](https://img.shields.io/crates/v/boringtun.svg)](https://crates.io/crates/boringtun)
 
 **BoringTun** is an implementation of the [WireGuard<sup>®</sup>](https://www.wireguard.com/) protocol designed for portability and speed.
 
@@ -23,8 +27,8 @@ cargo install boringtun
 
 ### Building
 
-- Library only: `cargo build --lib --release [--target $(TARGET_TRIPLE)]`
-- Executable: `cargo build --bin boringtun --release [--target $(TARGET_TRIPLE)]`
+- Library only: `cargo build --lib --no-default-features --release [--target $(TARGET_TRIPLE)]`
+- Executable: `cargo build --bin boringtun-cli --release [--target $(TARGET_TRIPLE)]`
 
 By default the executable is placed in the `./target/release` folder. You can copy it to a desired location manually, or install it using `cargo install --bin boringtun --path .`.
 
@@ -32,13 +36,13 @@ By default the executable is placed in the `./target/release` folder. You can co
 
 As per the specification, to start a tunnel use:
 
-`boringtun [-f/--foreground] INTERFACE-NAME`
+`boringtun-cli [-f/--foreground] INTERFACE-NAME`
 
 The tunnel can then be configured using [wg](https://git.zx2c4.com/WireGuard/about/src/tools/man/wg.8), as a regular WireGuard tunnel, or any other tool.
 
 It is also possible to use with [wg-quick](https://git.zx2c4.com/WireGuard/about/src/tools/man/wg-quick.8) by setting the environment variable `WG_QUICK_USERSPACE_IMPLEMENTATION` to `boringtun`. For example:
 
-`sudo WG_QUICK_USERSPACE_IMPLEMENTATION=boringtun WG_SUDO=1 wg-quick up CONFIGURATION`
+`sudo WG_QUICK_USERSPACE_IMPLEMENTATION=boringtun-cli WG_SUDO=1 wg-quick up CONFIGURATION`
 
 ### Testing
 
@@ -100,7 +104,7 @@ The project is licensed under the [3-Clause BSD License](https://opensource.org/
 
 ### Contribution
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the 3-Clause BSD License, shall licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the 3-Clause BSD License, shall be licensed as above, without any additional terms or conditions.
 
 If you want to contribute to this project, please read our [`CONTRIBUTING.md`].
 
